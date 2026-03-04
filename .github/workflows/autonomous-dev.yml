@@ -81,6 +81,7 @@ jobs:
           BRANCH="ops/${{ needs.select-task.outputs.issue_number }}-${{ github.run_id }}"
           echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
           git checkout -b "$BRANCH"
+          git push -u origin "$BRANCH"
       - name: Planner request
         env:
           OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}

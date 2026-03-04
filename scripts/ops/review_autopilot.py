@@ -25,7 +25,7 @@ else:
 for pr in prs:
     number = pr["number"]
     labels = {l["name"] for l in pr.get("labels", [])}
-    if args.pr_number == 0 and "ops:auto" not in labels:
+    if "ops:auto" not in labels:
         continue
 
     comments = gh_api("GET", f"/repos/{owner}/{repo}/pulls/{number}/comments", query={"per_page": 50})

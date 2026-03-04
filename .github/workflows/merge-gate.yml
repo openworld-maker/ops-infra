@@ -13,7 +13,25 @@ permissions:
   issues: write
 
 jobs:
+  check-managed-pr:
+    runs-on: ubuntu-latest
+    outputs:
+      managed: ${{ steps.labels.outputs.managed }}
+    steps:
+      - id: labels
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          labels="$(gh pr view "${{ inputs.pr_number }}" --json labels --jq '.labels[].name' || true)"
+          if echo "$labels" | grep -qx "ops:auto"; then
+            echo "managed=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "managed=false" >> "$GITHUB_OUTPUT"
+          fi
+
   conversation-gate:
+    needs: check-managed-pr
+    if: needs.check-managed-pr.outputs.managed == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
@@ -30,7 +48,8 @@ jobs:
         run: python3 _ops_infra/scripts/ops/conversation_gate.py --pr-number "${{ inputs.pr_number }}"
 
   merge:
-    needs: conversation-gate
+    needs: [check-managed-pr, conversation-gate]
+    if: needs.check-managed-pr.outputs.managed == 'true'
     runs-on: ubuntu-latest
     environment: ops-merge
     steps:

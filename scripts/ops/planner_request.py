@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -22,44 +23,54 @@ def call_model(models: list[str], system_prompt: str, user_prompt: str):
         die("OPENAI_API_KEY is required")
     last_error = ""
     for model in models:
-        payload = {
-            "model": model,
-            "input": [
-                {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
-            ],
-        }
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            text = data.get("output_text", "").strip()
-            if not text:
-                die("Planner model returned empty output")
+        for attempt in range(1, 5):
+            payload = {
+                "model": model,
+                "input": [
+                    {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+                ],
+            }
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/responses",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
             try:
-                plan = json.loads(text)
-            except json.JSONDecodeError:
-                start = text.find("{")
-                end = text.rfind("}")
-                if start == -1 or end == -1:
-                    die("Planner output was not JSON")
-                plan = json.loads(text[start : end + 1])
-            usage = data.get("usage", {})
-            return plan, usage, model
-        except urllib.error.HTTPError as err:
-            body = err.read().decode("utf-8", errors="ignore")
-            last_error = f"{err.code} {body}"
-            if err.code in (400, 401, 403, 404):
-                continue
-            raise
+                with urllib.request.urlopen(req) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                text = data.get("output_text", "").strip()
+                if not text:
+                    die("Planner model returned empty output")
+                try:
+                    plan = json.loads(text)
+                except json.JSONDecodeError:
+                    start = text.find("{")
+                    end = text.rfind("}")
+                    if start == -1 or end == -1:
+                        die("Planner output was not JSON")
+                    plan = json.loads(text[start : end + 1])
+                usage = data.get("usage", {})
+                return plan, usage, model
+            except urllib.error.HTTPError as err:
+                body = err.read().decode("utf-8", errors="ignore")
+                last_error = f"{err.code} {body}"
+                if err.code in (429, 500, 502, 503, 504):
+                    retry_after = err.headers.get("Retry-After")
+                    sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else min(2 ** attempt, 20)
+                    print(
+                        f"Planner transient API error {err.code} on model {model}, retrying in {sleep_s}s "
+                        f"(attempt {attempt}/4)"
+                    )
+                    time.sleep(sleep_s)
+                    continue
+                if err.code in (400, 401, 403, 404):
+                    break
+                raise
     die(f"Planner request failed for all candidate models: {models}. Last error: {last_error}")
 
 

@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import subprocess
+import time
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -16,32 +17,42 @@ def call_model(models: list[str], system_prompt: str, user_prompt: str):
         die("OPENAI_API_KEY is required")
     last_error = ""
     for model in models:
-        payload = {
-            "model": model,
-            "input": [
-                {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-                {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
-            ],
-        }
-        req = urllib.request.Request(
-            "https://api.openai.com/v1/responses",
-            data=json.dumps(payload).encode("utf-8"),
-            headers={
-                "Authorization": f"Bearer {key}",
-                "Content-Type": "application/json",
-            },
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            return data.get("output_text", "").strip(), data.get("usage", {}), model
-        except urllib.error.HTTPError as err:
-            body = err.read().decode("utf-8", errors="ignore")
-            last_error = f"{err.code} {body}"
-            if err.code in (400, 401, 403, 404):
-                continue
-            raise
+        for attempt in range(1, 5):
+            payload = {
+                "model": model,
+                "input": [
+                    {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+                ],
+            }
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/responses",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Authorization": f"Bearer {key}",
+                    "Content-Type": "application/json",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                return data.get("output_text", "").strip(), data.get("usage", {}), model
+            except urllib.error.HTTPError as err:
+                body = err.read().decode("utf-8", errors="ignore")
+                last_error = f"{err.code} {body}"
+                if err.code in (429, 500, 502, 503, 504):
+                    retry_after = err.headers.get("Retry-After")
+                    sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else min(2 ** attempt, 20)
+                    print(
+                        f"Executor transient API error {err.code} on model {model}, retrying in {sleep_s}s "
+                        f"(attempt {attempt}/4)"
+                    )
+                    time.sleep(sleep_s)
+                    continue
+                if err.code in (400, 401, 403, 404):
+                    break
+                raise
     die(f"Executor request failed for all candidate models: {models}. Last error: {last_error}")
 
 

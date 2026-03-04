@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import time
-import urllib.parse
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -12,140 +11,76 @@ from pathlib import Path
 from common import die, set_output
 
 
-DEFAULT_MODEL_CANDIDATES = (
-    "gemini-2.0-flash-lite,gemini-2.0-flash,gemini-2.5-flash-lite,gemini-2.5-flash,gemini-2.5-pro"
-)
+DEFAULT_MODEL_CANDIDATES = "gpt-5,gpt-5-mini,gpt-4o-mini"
 
 
-def gemini_api_key() -> str:
-    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
+def openai_api_key() -> str:
+    key = os.getenv("OPENAI_API_KEY", "")
     if not key:
-        die("GEMINI_API_KEY (or GOOGLE_API_KEY) is required")
+        die("OPENAI_API_KEY is required")
     return key
 
 
-def normalize_model_name(name: str) -> str:
-    return name.strip().removeprefix("models/").strip()
+def extract_response_text(data: dict) -> str:
+    output_text = data.get("output_text")
+    if isinstance(output_text, str) and output_text.strip():
+        return output_text.strip()
 
-
-def resolve_model_candidates(key: str) -> list[str]:
-    configured = [
-        normalize_model_name(m)
-        for m in os.getenv("EXECUTOR_MODEL_CANDIDATES", DEFAULT_MODEL_CANDIDATES).split(",")
-        if normalize_model_name(m)
-    ]
-    discovered: list[str] = []
-    for api_version in ("v1", "v1beta"):
-        req = urllib.request.Request(
-            f"https://generativelanguage.googleapis.com/{api_version}/models?key={key}",
-            headers={"Content-Type": "application/json"},
-            method="GET",
-        )
-        try:
-            with urllib.request.urlopen(req) as resp:
-                data = json.loads(resp.read().decode("utf-8"))
-            for model in data.get("models", []):
-                methods = model.get("supportedGenerationMethods") or []
-                if "generateContent" not in methods:
-                    continue
-                name = normalize_model_name(model.get("name", ""))
-                if name and name not in discovered:
-                    discovered.append(name)
-            if discovered:
-                break
-        except urllib.error.HTTPError as err:
-            body = err.read().decode("utf-8", errors="ignore")
-            print(f"Executor model discovery skipped for {api_version}: {err.code} {body[:240]}")
-        except Exception as err:  # pylint: disable=broad-except
-            print(f"Executor model discovery skipped for {api_version}: {err}")
-
-    if not discovered:
-        return configured
-
-    resolved: list[str] = []
-    for candidate in configured:
-        if candidate in discovered and candidate not in resolved:
-            resolved.append(candidate)
+    snippets: list[str] = []
+    for item in data.get("output", []):
+        if not isinstance(item, dict):
             continue
-        prefix = f"{candidate}-"
-        match = next((m for m in discovered if m.startswith(prefix)), "")
-        if match and match not in resolved:
-            resolved.append(match)
-
-    preferred_prefixes = [
-        "gemini-2.0-flash-lite",
-        "gemini-2.0-flash",
-        "gemini-2.5-flash-lite",
-        "gemini-2.5-flash",
-        "gemini-2.5-pro",
-        "gemini-1.5-flash",
-    ]
-    for prefix in preferred_prefixes:
-        if prefix in discovered and prefix not in resolved:
-            resolved.append(prefix)
-            continue
-        prefix_match = next((m for m in discovered if m.startswith(f"{prefix}-")), "")
-        if prefix_match and prefix_match not in resolved:
-            resolved.append(prefix_match)
-
-    for discovered_model in discovered:
-        if discovered_model not in resolved:
-            resolved.append(discovered_model)
-
-    return resolved or configured
+        for content in item.get("content", []):
+            if not isinstance(content, dict):
+                continue
+            if content.get("type") in ("output_text", "text") and content.get("text"):
+                snippets.append(content.get("text", ""))
+    return "\n".join(snippets).strip()
 
 
 def call_model(models: list[str], system_prompt: str, user_prompt: str):
-    key = gemini_api_key()
+    key = openai_api_key()
     last_error = ""
     for model in models:
-        for api_version in ("v1", "v1beta"):
-            for attempt in range(1, 5):
-                payload = {
-                    "systemInstruction": {"parts": [{"text": system_prompt}]},
-                    "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
-                    "generationConfig": {"temperature": 0.1},
-                }
-                model_ref = urllib.parse.quote(model, safe="")
-                req = urllib.request.Request(
-                    f"https://generativelanguage.googleapis.com/{api_version}/models/{model_ref}:generateContent?key={key}",
-                    data=json.dumps(payload).encode("utf-8"),
-                    headers={
-                        "Content-Type": "application/json",
-                    },
-                    method="POST",
-                )
-                try:
-                    with urllib.request.urlopen(req) as resp:
-                        data = json.loads(resp.read().decode("utf-8"))
-                    text = ""
-                    for candidate in data.get("candidates", []):
-                        content = candidate.get("content", {})
-                        parts = content.get("parts", [])
-                        snippets = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
-                        if snippets:
-                            text = "\n".join(snippets).strip()
-                            break
-                    usage_meta = data.get("usageMetadata", {})
-                    usage = {"total_tokens": int(usage_meta.get("totalTokenCount", 0))}
-                    return text, usage, model
-                except urllib.error.HTTPError as err:
-                    body = err.read().decode("utf-8", errors="ignore")
-                    last_error = f"{err.code} {body}"
-                    if err.code in (429, 500, 502, 503, 504):
-                        retry_after = err.headers.get("Retry-After")
-                        sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else min(2 ** attempt, 20)
-                        print(
-                            f"Executor transient API error {err.code} on model {model} ({api_version}), "
-                            f"retrying in {sleep_s}s (attempt {attempt}/4): {body[:240]}"
-                        )
-                        time.sleep(sleep_s)
-                        continue
-                    if err.code == 404:
-                        break
-                    if err.code in (400, 401, 403):
-                        break
-                    raise
+        for attempt in range(1, 5):
+            payload = {
+                "model": model,
+                "input": [
+                    {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
+                    {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
+                ],
+            }
+            req = urllib.request.Request(
+                "https://api.openai.com/v1/responses",
+                data=json.dumps(payload).encode("utf-8"),
+                headers={
+                    "Content-Type": "application/json",
+                    "Authorization": f"Bearer {key}",
+                },
+                method="POST",
+            )
+            try:
+                with urllib.request.urlopen(req) as resp:
+                    data = json.loads(resp.read().decode("utf-8"))
+                text = extract_response_text(data)
+                usage_obj = data.get("usage") or {}
+                usage = {"total_tokens": int(usage_obj.get("total_tokens", 0) or 0)}
+                return text, usage, model
+            except urllib.error.HTTPError as err:
+                body = err.read().decode("utf-8", errors="ignore")
+                last_error = f"{err.code} {body}"
+                if err.code in (429, 500, 502, 503, 504):
+                    retry_after = err.headers.get("Retry-After")
+                    sleep_s = int(retry_after) if retry_after and retry_after.isdigit() else min(2**attempt, 20)
+                    print(
+                        f"Executor transient API error {err.code} on model {model}, "
+                        f"retrying in {sleep_s}s (attempt {attempt}/4): {body[:240]}"
+                    )
+                    time.sleep(sleep_s)
+                    continue
+                if err.code in (400, 401, 403, 404, 422):
+                    break
+                raise
     die(f"Executor request failed for all candidate models: {models}. Last error: {last_error}")
 
 
@@ -163,8 +98,7 @@ parser.add_argument("--delta-file", default="")
 parser.add_argument("--executor-version", required=True)
 parser.add_argument("--ops-infra-path", default="_ops_infra")
 args = parser.parse_args()
-key = gemini_api_key()
-model_candidates = resolve_model_candidates(key)
+model_candidates = [m.strip() for m in os.getenv("EXECUTOR_MODEL_CANDIDATES", DEFAULT_MODEL_CANDIDATES).split(",") if m.strip()]
 max_prompt_chars = int(os.getenv("OPS_MAX_PROMPT_CHARS", "30000"))
 print(f"Executor model candidates: {', '.join(model_candidates)}")
 

@@ -16,13 +16,13 @@ Central reusable GitHub Actions workflows and shared scripts for the `openworld-
 
 ## Required secrets in caller repositories
 
-- `GEMINI_API_KEY`
+- `OPENAI_API_KEY`
 - `SLACK_WEBHOOK_URL` (optional but recommended)
 
 ## Model selection behavior
 
-- Workflow defaults prefer lower-cost Gemini Flash models first.
-- Planner/executor scripts auto-discover available Gemini models and skip unsupported entries.
+- Workflow defaults try `gpt-5`, then `gpt-5-mini`, then `gpt-4o-mini`.
+- Planner/executor scripts retry transient API failures and fall back across model candidates.
 - Override candidates with `PLANNER_MODEL_CANDIDATES` and `EXECUTOR_MODEL_CANDIDATES` if needed.
 - Use `OPS_MAX_PROMPT_CHARS` to cap per-section prompt size when issue descriptions are very large.
 

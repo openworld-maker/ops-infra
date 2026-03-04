@@ -12,7 +12,7 @@ on:
         type: string
         default: v1.0.0
     secrets:
-      OPENAI_API_KEY:
+      GEMINI_API_KEY:
         required: true
 
 permissions:
@@ -22,7 +22,7 @@ permissions:
 
 env:
   GITHUB_TOKEN: ${{ github.token }}
-  EXECUTOR_MODEL: gpt-4o-mini
+  EXECUTOR_MODEL_CANDIDATES: gemini-2.5-pro,gemini-2.0-flash,gemini-1.5-pro
 
 jobs:
   review-autopilot:
@@ -43,5 +43,5 @@ jobs:
       - run: pip install -r _ops_infra/requirements.txt
       - name: Process PR comments
         env:
-          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+          GEMINI_API_KEY: ${{ secrets.GEMINI_API_KEY }}
         run: python3 _ops_infra/scripts/ops/review_autopilot.py --pr-number "${{ inputs.pr_number }}" --ops-infra-path _ops_infra

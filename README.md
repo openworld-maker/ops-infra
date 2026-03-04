@@ -16,7 +16,7 @@ Central reusable GitHub Actions workflows and shared scripts for the `openworld-
 
 ## Required secrets in caller repositories
 
-- `OPENAI_API_KEY`
+- `GEMINI_API_KEY`
 - `SLACK_WEBHOOK_URL` (optional but recommended)
 
 ## Recommended environments in caller repositories

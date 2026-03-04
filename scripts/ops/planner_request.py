@@ -3,6 +3,7 @@ import argparse
 import json
 import os
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -18,24 +19,22 @@ from common import (
 
 
 def call_model(models: list[str], system_prompt: str, user_prompt: str):
-    key = os.getenv("OPENAI_API_KEY", "")
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
     if not key:
-        die("OPENAI_API_KEY is required")
+        die("GEMINI_API_KEY (or GOOGLE_API_KEY) is required")
     last_error = ""
     for model in models:
         for attempt in range(1, 5):
             payload = {
-                "model": model,
-                "input": [
-                    {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-                    {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
-                ],
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {"temperature": 0.1},
             }
+            model_ref = urllib.parse.quote(model, safe="")
             req = urllib.request.Request(
-                "https://api.openai.com/v1/responses",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_ref}:generateContent?key={key}",
                 data=json.dumps(payload).encode("utf-8"),
                 headers={
-                    "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                 },
                 method="POST",
@@ -43,7 +42,14 @@ def call_model(models: list[str], system_prompt: str, user_prompt: str):
             try:
                 with urllib.request.urlopen(req) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                text = data.get("output_text", "").strip()
+                text = ""
+                for candidate in data.get("candidates", []):
+                    content = candidate.get("content", {})
+                    parts = content.get("parts", [])
+                    snippets = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
+                    if snippets:
+                        text = "\n".join(snippets).strip()
+                        break
                 if not text:
                     die("Planner model returned empty output")
                 try:
@@ -54,7 +60,8 @@ def call_model(models: list[str], system_prompt: str, user_prompt: str):
                     if start == -1 or end == -1:
                         die("Planner output was not JSON")
                     plan = json.loads(text[start : end + 1])
-                usage = data.get("usage", {})
+                usage_meta = data.get("usageMetadata", {})
+                usage = {"total_tokens": int(usage_meta.get("totalTokenCount", 0))}
                 return plan, usage, model
             except urllib.error.HTTPError as err:
                 body = err.read().decode("utf-8", errors="ignore")
@@ -127,7 +134,7 @@ if args.delta_file and Path(args.delta_file).exists():
 
 model_candidates = [
     m.strip()
-    for m in os.getenv("PLANNER_MODEL_CANDIDATES", "gpt-5.3,gpt-5,gpt-4o-mini").split(",")
+    for m in os.getenv("PLANNER_MODEL_CANDIDATES", "gemini-2.5-pro,gemini-2.0-flash,gemini-1.5-pro").split(",")
     if m.strip()
 ]
 plan, usage, used_model = call_model(model_candidates, system_prompt, user_prompt)

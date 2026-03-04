@@ -4,6 +4,7 @@ import json
 import os
 import subprocess
 import time
+import urllib.parse
 import urllib.error
 import urllib.request
 from pathlib import Path
@@ -12,24 +13,22 @@ from common import die, set_output
 
 
 def call_model(models: list[str], system_prompt: str, user_prompt: str):
-    key = os.getenv("OPENAI_API_KEY", "")
+    key = os.getenv("GEMINI_API_KEY") or os.getenv("GOOGLE_API_KEY", "")
     if not key:
-        die("OPENAI_API_KEY is required")
+        die("GEMINI_API_KEY (or GOOGLE_API_KEY) is required")
     last_error = ""
     for model in models:
         for attempt in range(1, 5):
             payload = {
-                "model": model,
-                "input": [
-                    {"role": "system", "content": [{"type": "input_text", "text": system_prompt}]},
-                    {"role": "user", "content": [{"type": "input_text", "text": user_prompt}]},
-                ],
+                "systemInstruction": {"parts": [{"text": system_prompt}]},
+                "contents": [{"role": "user", "parts": [{"text": user_prompt}]}],
+                "generationConfig": {"temperature": 0.1},
             }
+            model_ref = urllib.parse.quote(model, safe="")
             req = urllib.request.Request(
-                "https://api.openai.com/v1/responses",
+                f"https://generativelanguage.googleapis.com/v1beta/models/{model_ref}:generateContent?key={key}",
                 data=json.dumps(payload).encode("utf-8"),
                 headers={
-                    "Authorization": f"Bearer {key}",
                     "Content-Type": "application/json",
                 },
                 method="POST",
@@ -37,7 +36,17 @@ def call_model(models: list[str], system_prompt: str, user_prompt: str):
             try:
                 with urllib.request.urlopen(req) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
-                return data.get("output_text", "").strip(), data.get("usage", {}), model
+                text = ""
+                for candidate in data.get("candidates", []):
+                    content = candidate.get("content", {})
+                    parts = content.get("parts", [])
+                    snippets = [p.get("text", "") for p in parts if isinstance(p, dict) and p.get("text")]
+                    if snippets:
+                        text = "\n".join(snippets).strip()
+                        break
+                usage_meta = data.get("usageMetadata", {})
+                usage = {"total_tokens": int(usage_meta.get("totalTokenCount", 0))}
+                return text, usage, model
             except urllib.error.HTTPError as err:
                 body = err.read().decode("utf-8", errors="ignore")
                 last_error = f"{err.code} {body}"
@@ -65,7 +74,7 @@ parser.add_argument("--ops-infra-path", default="_ops_infra")
 args = parser.parse_args()
 model_candidates = [
     m.strip()
-    for m in os.getenv("EXECUTOR_MODEL_CANDIDATES", "gpt-5.3,gpt-5,gpt-4o-mini").split(",")
+    for m in os.getenv("EXECUTOR_MODEL_CANDIDATES", "gemini-2.5-pro,gemini-2.0-flash,gemini-1.5-pro").split(",")
     if m.strip()
 ]
 

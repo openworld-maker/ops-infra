@@ -38,6 +38,22 @@ def extract_response_text(data: dict) -> str:
     return "\n".join(snippets).strip()
 
 
+def normalize_patch_text(text: str) -> str:
+    candidate = text.strip()
+    if not candidate:
+        return ""
+    if candidate.startswith("```"):
+        lines = candidate.splitlines()
+        if len(lines) >= 3 and lines[-1].strip() == "```":
+            candidate = "\n".join(lines[1:-1]).strip()
+    diff_idx = candidate.find("diff --git ")
+    if diff_idx >= 0:
+        return candidate[diff_idx:].strip()
+    if candidate.startswith("--- ") and "\n+++ " in candidate:
+        return candidate
+    return ""
+
+
 def call_model(models: list[str], system_prompt: str, user_prompt: str):
     key = openai_api_key()
     last_error = ""
@@ -150,10 +166,22 @@ if delta:
 text, usage, used_model = call_model(model_candidates, system_prompt, user_prompt)
 patch_path = Path("ops-state/generated.patch")
 patch_path.parent.mkdir(parents=True, exist_ok=True)
-patch_path.write_text(text + "\n")
+patch_text = normalize_patch_text(text)
+patch_path.write_text((patch_text if patch_text else text) + "\n")
 
-if text:
-    subprocess.run(["git", "apply", "--whitespace=nowarn", str(patch_path)], check=True)
+if patch_text:
+    check = subprocess.run(
+        ["git", "apply", "--check", "--whitespace=nowarn", str(patch_path)],
+        capture_output=True,
+        text=True,
+    )
+    if check.returncode == 0:
+        subprocess.run(["git", "apply", "--whitespace=nowarn", str(patch_path)], check=True)
+    else:
+        problem = (check.stderr or check.stdout or "unknown apply failure").strip()
+        print(f"Executor generated a non-applicable patch; continuing without apply: {problem[:240]}")
+else:
+    print("Executor produced no valid unified diff patch; continuing without apply")
 
 set_output("patch_file", str(patch_path))
 set_output("executor_tokens", str(usage.get("total_tokens", 0)))

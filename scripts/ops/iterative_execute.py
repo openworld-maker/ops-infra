@@ -54,14 +54,16 @@ def main():
                 ])
             )
 
-        exec_cmd = " ".join([
+        exec_parts = [
             "python3", f"{args.ops_infra_path}/scripts/ops/executor_run.py",
             "--mode impl",
             "--plan-file ops-state/ops-plan.json",
             f"--executor-version {args.executor_version}",
             f"--ops-infra-path {args.ops_infra_path}",
-            f"--delta-file {delta_file if delta_file.exists() else ''}",
-        ])
+        ]
+        if delta_file.exists():
+            exec_parts.append(f"--delta-file {delta_file}")
+        exec_cmd = " ".join(exec_parts)
         run_cmd(exec_cmd)
 
         result = {

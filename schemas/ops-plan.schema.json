@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openworld-maker.github.io/ops-plan.schema.json",
+  "type": "object",
+  "required": [
+    "objective",
+    "constraints",
+    "target_files",
+    "implementation_steps",
+    "test_commands",
+    "definition_of_done",
+    "risk_flags"
+  ],
+  "properties": {
+    "objective": { "type": "string", "minLength": 1 },
+    "constraints": { "type": "array", "items": { "type": "string" } },
+    "target_files": { "type": "array", "items": { "type": "string" } },
+    "implementation_steps": { "type": "array", "items": { "type": "string" } },
+    "test_commands": { "type": "array", "items": { "type": "string" } },
+    "definition_of_done": { "type": "array", "items": { "type": "string" } },
+    "risk_flags": { "type": "array", "items": { "type": "string" } },
+    "requires_docker": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}

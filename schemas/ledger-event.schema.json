@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openworld-maker.github.io/ledger-event.schema.json",
+  "type": "object",
+  "required": ["ts", "event", "event_hash", "prev_event_hash", "run_id", "repository"],
+  "properties": {
+    "ts": { "type": "string" },
+    "event": { "type": "string" },
+    "run_id": { "type": "string" },
+    "repository": { "type": "string" },
+    "data": { "type": "object" },
+    "prev_event_hash": { "type": "string" },
+    "event_hash": { "type": "string" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,21 @@
+name: open-pr
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../../../../scripts/ops/open_pr.py" \
+          --issue-number "${{ inputs.issue-number }}" \
+          --branch "${{ inputs.branch }}" \
+          --base "${{ inputs.base }}" \
+          --run-id "${{ inputs.run-id }}"
+inputs:
+  issue-number:
+    required: true
+  branch:
+    required: true
+  base:
+    required: false
+    default: main
+  run-id:
+    required: true

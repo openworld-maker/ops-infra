@@ -1,0 +1,25 @@
+name: executor-run
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../../../../scripts/ops/executor_run.py" \
+          --mode "${{ inputs.mode }}" \
+          --plan-file "${{ inputs.plan-file }}" \
+          --delta-file "${{ inputs.delta-file }}" \
+          --executor-version "${{ inputs.executor-version }}" \
+          --ops-infra-path "${{ inputs.ops-infra-path }}"
+inputs:
+  mode:
+    required: true
+  plan-file:
+    required: false
+    default: ops-state/ops-plan.json
+  delta-file:
+    required: false
+    default: ""
+  executor-version:
+    required: true
+  ops-infra-path:
+    required: true

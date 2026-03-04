@@ -1,0 +1,43 @@
+name: review-autopilot
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: false
+        type: string
+        default: "0"
+      executor_prompt_version:
+        required: false
+        type: string
+        default: v1.0.0
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  review-autopilot:
+    runs-on: ubuntu-latest
+    environment: ops-exec
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: openworld-maker/ops-infra
+          ref: v1
+          path: _ops_infra
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r _ops_infra/requirements.txt
+      - name: Process PR comments
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: python3 _ops_infra/scripts/ops/review_autopilot.py --pr-number "${{ inputs.pr_number }}" --ops-infra-path _ops_infra

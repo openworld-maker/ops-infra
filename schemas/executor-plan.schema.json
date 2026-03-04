@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://openworld-maker.github.io/executor-plan.schema.json",
+  "type": "object",
+  "required": ["planned_files", "edit_strategy", "test_sequence", "risk_controls"],
+  "properties": {
+    "planned_files": { "type": "array", "items": { "type": "string" } },
+    "edit_strategy": { "type": "string", "minLength": 1 },
+    "test_sequence": { "type": "array", "items": { "type": "string" } },
+    "risk_controls": { "type": "array", "items": { "type": "string" } },
+    "estimated_change_size": { "type": "string" }
+  },
+  "additionalProperties": true
+}

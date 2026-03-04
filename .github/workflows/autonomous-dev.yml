@@ -1,0 +1,266 @@
+name: autonomous-dev
+
+on:
+  workflow_call:
+    inputs:
+      issue_number:
+        required: false
+        type: string
+      objective:
+        required: false
+        type: string
+      resume_run_id:
+        required: false
+        type: string
+      planner_prompt_version:
+        required: false
+        type: string
+        default: v1.0.0
+      executor_prompt_version:
+        required: false
+        type: string
+        default: v1.0.0
+    secrets:
+      OPENAI_API_KEY:
+        required: true
+      SLACK_WEBHOOK_URL:
+        required: false
+
+permissions:
+  contents: write
+  issues: write
+  pull-requests: write
+
+jobs:
+  select-task:
+    runs-on: ubuntu-latest
+    outputs:
+      found: ${{ steps.select.outputs.found }}
+      issue_number: ${{ steps.select.outputs.issue_number }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: openworld-maker/ops-infra
+          ref: v1
+          path: _ops_infra
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r _ops_infra/requirements.txt
+      - id: select
+        run: python3 _ops_infra/scripts/ops/select_task.py --issue-number "${{ inputs.issue_number }}"
+
+  plan:
+    needs: select-task
+    if: needs.select-task.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    environment: ops-plan
+    outputs:
+      branch: ${{ steps.branch.outputs.branch }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: openworld-maker/ops-infra
+          ref: v1
+          path: _ops_infra
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r _ops_infra/requirements.txt
+      - name: Enforce prompt pinning
+        run: python3 _ops_infra/scripts/ops/check_prompt_pins.py --ops-infra-path _ops_infra
+      - id: branch
+        run: |
+          BRANCH="ops/${{ needs.select-task.outputs.issue_number }}-${{ github.run_id }}"
+          echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+          git checkout -b "$BRANCH"
+      - name: Planner request
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 _ops_infra/scripts/ops/planner_request.py \
+            --issue-number "${{ needs.select-task.outputs.issue_number }}" \
+            --planner-version "${{ inputs.planner_prompt_version }}" \
+            --ops-infra-path _ops_infra \
+            --run-id "${{ github.run_id }}"
+      - name: Ledger plan
+        run: python3 _ops_infra/scripts/ops/ledger_write.py --event planner_complete --run-id "${{ github.run_id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ops-state-plan-${{ github.run_id }}
+          path: ops-state
+
+  executor-plan:
+    needs: [select-task, plan]
+    if: needs.select-task.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    environment: ops-exec
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.branch }}
+      - uses: actions/checkout@v4
+        with:
+          repository: openworld-maker/ops-infra
+          ref: v1
+          path: _ops_infra
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r _ops_infra/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: ops-state-plan-${{ github.run_id }}
+          path: ops-state
+      - name: Executor plan mode
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 _ops_infra/scripts/ops/executor_run.py \
+            --mode plan \
+            --executor-version "${{ inputs.executor_prompt_version }}" \
+            --ops-infra-path _ops_infra
+      - name: Ledger executor plan
+        run: python3 _ops_infra/scripts/ops/ledger_write.py --event executor_plan_complete --run-id "${{ github.run_id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ops-state-executor-plan-${{ github.run_id }}
+          path: ops-state
+
+  executor-impl:
+    needs: [select-task, plan, executor-plan]
+    if: needs.select-task.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    environment: ops-exec
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.branch }}
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: openworld-maker/ops-infra
+          ref: v1
+          path: _ops_infra
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r _ops_infra/requirements.txt
+      - uses: actions/download-artifact@v4
+        with:
+          name: ops-state-executor-plan-${{ github.run_id }}
+          path: ops-state
+      - id: iterate
+        name: Iterative impl + tests
+        continue-on-error: true
+        env:
+          OPENAI_API_KEY: ${{ secrets.OPENAI_API_KEY }}
+        run: |
+          python3 _ops_infra/scripts/ops/iterative_execute.py \
+            --issue-number "${{ needs.select-task.outputs.issue_number }}" \
+            --planner-version "${{ inputs.planner_prompt_version }}" \
+            --executor-version "${{ inputs.executor_prompt_version }}" \
+            --ops-infra-path _ops_infra \
+            --run-id "${{ github.run_id }}"
+      - name: Label human takeover on iteration failure
+        if: steps.iterate.outcome == 'failure'
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
+        run: |
+          python3 - <<'PY'
+          import json
+          import os
+          import urllib.request
+          owner, repo = os.environ["GITHUB_REPOSITORY"].split("/", 1)
+          issue = "${{ needs.select-task.outputs.issue_number }}"
+          token = os.environ["GITHUB_TOKEN"]
+          headers = {
+              "Authorization": f"Bearer {token}",
+              "Accept": "application/vnd.github+json",
+              "X-GitHub-Api-Version": "2022-11-28",
+              "Content-Type": "application/json",
+          }
+          label_req = urllib.request.Request(
+              f"https://api.github.com/repos/{owner}/{repo}/issues/{issue}/labels",
+              data=json.dumps({"labels": ["ops:blocked", "ops:needs-human"]}).encode(),
+              headers=headers,
+              method="POST",
+          )
+          urllib.request.urlopen(label_req).read()
+          comment_req = urllib.request.Request(
+              f"https://api.github.com/repos/{owner}/{repo}/issues/{issue}/comments",
+              data=json.dumps({"body": "Automation paused after iteration limit or repeated test failures. Human takeover required."}).encode(),
+              headers=headers,
+              method="POST",
+          )
+          urllib.request.urlopen(comment_req).read()
+          PY
+      - name: Stop pipeline after takeover handoff
+        if: steps.iterate.outcome == 'failure'
+        run: exit 1
+      - name: Commit and push branch
+        if: steps.iterate.outcome == 'success'
+        run: |
+          git config user.name "ops-bot"
+          git config user.email "ops-bot@users.noreply.github.com"
+          if [ -n "$(git status --porcelain)" ]; then
+            git add -A
+            git commit -m "ops: implement issue #${{ needs.select-task.outputs.issue_number }}"
+            git push origin "${{ needs.plan.outputs.branch }}"
+          fi
+      - name: Ledger executor impl
+        run: python3 _ops_infra/scripts/ops/ledger_write.py --event executor_impl_complete --run-id "${{ github.run_id }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ledger-${{ github.run_id }}
+          path: ops-state/ledger.jsonl
+
+  pre-pr-hold:
+    needs: [select-task, plan, executor-impl]
+    if: needs.select-task.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    environment: ops-pre-pr-approval
+    steps:
+      - run: echo "Pre-PR approval gate granted"
+
+  open-pr:
+    needs: [select-task, plan, pre-pr-hold]
+    if: needs.select-task.outputs.found == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ needs.plan.outputs.branch }}
+          fetch-depth: 0
+      - uses: actions/checkout@v4
+        with:
+          repository: openworld-maker/ops-infra
+          ref: v1
+          path: _ops_infra
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r _ops_infra/requirements.txt
+      - name: Restore state
+        uses: actions/download-artifact@v4
+        with:
+          name: ops-state-executor-plan-${{ github.run_id }}
+          path: ops-state
+      - name: Open PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          python3 _ops_infra/scripts/ops/open_pr.py \
+            --issue-number "${{ needs.select-task.outputs.issue_number }}" \
+            --branch "${{ needs.plan.outputs.branch }}" \
+            --run-id "${{ github.run_id }}"
+      - name: Notify
+        env:
+          SLACK_WEBHOOK_URL: ${{ secrets.SLACK_WEBHOOK_URL }}
+        run: |
+          python3 _ops_infra/scripts/ops/notify.py \
+            --issue-number "${{ needs.select-task.outputs.issue_number }}" \
+            --message "Automation created a PR after pre-PR approval gate." \
+            --slack

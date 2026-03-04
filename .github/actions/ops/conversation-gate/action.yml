@@ -1,0 +1,9 @@
+name: conversation-gate
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/../../../../scripts/ops/conversation_gate.py" --pr-number "${{ inputs.pr-number }}"
+inputs:
+  pr-number:
+    required: true

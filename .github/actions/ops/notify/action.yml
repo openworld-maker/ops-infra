@@ -1,0 +1,19 @@
+name: notify
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        args=(--issue-number "${{ inputs.issue-number }}" --message "${{ inputs.message }}")
+        if [ "${{ inputs.slack }}" = "true" ]; then
+          args+=(--slack)
+        fi
+        python3 "$GITHUB_ACTION_PATH/../../../../scripts/ops/notify.py" "${args[@]}"
+inputs:
+  issue-number:
+    required: true
+  message:
+    required: true
+  slack:
+    required: false
+    default: "true"

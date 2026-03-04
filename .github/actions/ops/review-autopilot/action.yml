@@ -1,0 +1,12 @@
+name: review-autopilot
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/../../../../scripts/ops/review_autopilot.py" --pr-number "${{ inputs.pr-number }}" --ops-infra-path "${{ inputs.ops-infra-path }}"
+inputs:
+  pr-number:
+    required: false
+    default: "0"
+  ops-infra-path:
+    required: true

@@ -1,0 +1,41 @@
+name: merge-gate
+
+on:
+  workflow_call:
+    inputs:
+      pr_number:
+        required: true
+        type: string
+
+permissions:
+  contents: write
+  pull-requests: write
+  issues: write
+
+jobs:
+  conversation-gate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+        with:
+          repository: openworld-maker/ops-infra
+          ref: v1
+          path: _ops_infra
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+      - run: pip install -r _ops_infra/requirements.txt
+      - name: Block merge when unresolved review threads exist
+        run: python3 _ops_infra/scripts/ops/conversation_gate.py --pr-number "${{ inputs.pr_number }}"
+
+  merge:
+    needs: conversation-gate
+    runs-on: ubuntu-latest
+    environment: ops-merge
+    steps:
+      - name: Merge PR
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh pr merge "${{ inputs.pr_number }}" --squash --auto --delete-branch

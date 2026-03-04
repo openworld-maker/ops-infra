@@ -1,0 +1,10 @@
+name: select-task
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: python3 "$GITHUB_ACTION_PATH/../../../../scripts/ops/select_task.py" --issue-number "${{ inputs.issue-number }}"
+inputs:
+  issue-number:
+    required: false
+    default: ""

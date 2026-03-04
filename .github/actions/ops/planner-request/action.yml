@@ -1,0 +1,25 @@
+name: planner-request
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        python3 "$GITHUB_ACTION_PATH/../../../../scripts/ops/planner_request.py" \
+          --issue-number "${{ inputs.issue-number }}" \
+          --objective "${{ inputs.objective }}" \
+          --planner-version "${{ inputs.planner-version }}" \
+          --ops-infra-path "${{ inputs.ops-infra-path }}" \
+          --run-id "${{ inputs.run-id }}"
+inputs:
+  issue-number:
+    required: false
+    default: ""
+  objective:
+    required: false
+    default: ""
+  planner-version:
+    required: true
+  ops-infra-path:
+    required: true
+  run-id:
+    required: true

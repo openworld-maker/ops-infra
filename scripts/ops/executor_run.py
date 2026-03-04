@@ -3,35 +3,46 @@ import argparse
 import json
 import os
 import subprocess
+import urllib.error
 import urllib.request
 from pathlib import Path
 
 from common import die, set_output
 
 
-def call_model(model: str, system_prompt: str, user_prompt: str):
+def call_model(models: list[str], system_prompt: str, user_prompt: str):
     key = os.getenv("OPENAI_API_KEY", "")
     if not key:
         die("OPENAI_API_KEY is required")
-    payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
-        ],
-    }
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    return data.get("output_text", "").strip(), data.get("usage", {})
+    last_error = ""
+    for model in models:
+        payload = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+                {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+            ],
+        }
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            return data.get("output_text", "").strip(), data.get("usage", {}), model
+        except urllib.error.HTTPError as err:
+            body = err.read().decode("utf-8", errors="ignore")
+            last_error = f"{err.code} {body}"
+            if err.code in (400, 401, 403, 404):
+                continue
+            raise
+    die(f"Executor request failed for all candidate models: {models}. Last error: {last_error}")
 
 
 parser = argparse.ArgumentParser()
@@ -41,6 +52,11 @@ parser.add_argument("--delta-file", default="")
 parser.add_argument("--executor-version", required=True)
 parser.add_argument("--ops-infra-path", default="_ops_infra")
 args = parser.parse_args()
+model_candidates = [
+    m.strip()
+    for m in os.getenv("EXECUTOR_MODEL_CANDIDATES", "gpt-5.3,gpt-5,gpt-4o-mini").split(",")
+    if m.strip()
+]
 
 plan = json.loads(Path(args.plan_file).read_text())
 delta = ""
@@ -55,7 +71,7 @@ if args.mode == "plan":
     user_prompt += "\n\n# Task Plan\n" + json.dumps(plan, indent=2)
     if delta:
         user_prompt += "\n\n# Delta Context\n" + delta
-    text, usage = call_model(os.getenv("EXECUTOR_MODEL", "gpt-5"), system_prompt, user_prompt)
+    text, usage, used_model = call_model(model_candidates, system_prompt, user_prompt)
     try:
         output = json.loads(text)
     except json.JSONDecodeError:
@@ -71,6 +87,7 @@ if args.mode == "plan":
     set_output("executor_tokens", str(usage.get("total_tokens", 0)))
     state["executor_tokens_last"] = usage.get("total_tokens", 0)
     state["executor_tokens"] = int(state.get("executor_tokens", 0)) + int(usage.get("total_tokens", 0))
+    state["executor_model"] = used_model
     state_path.parent.mkdir(parents=True, exist_ok=True)
     state_path.write_text(json.dumps(state, indent=2) + "\n")
     print(f"Wrote {out_path}")
@@ -84,7 +101,7 @@ if Path("ops-state/executor-plan.json").exists():
 if delta:
     user_prompt += "\n\n# Delta Context\n" + delta
 
-text, usage = call_model(os.getenv("EXECUTOR_MODEL", "gpt-5"), system_prompt, user_prompt)
+text, usage, used_model = call_model(model_candidates, system_prompt, user_prompt)
 patch_path = Path("ops-state/generated.patch")
 patch_path.parent.mkdir(parents=True, exist_ok=True)
 patch_path.write_text(text + "\n")
@@ -96,6 +113,7 @@ set_output("patch_file", str(patch_path))
 set_output("executor_tokens", str(usage.get("total_tokens", 0)))
 state["executor_tokens_last"] = usage.get("total_tokens", 0)
 state["executor_tokens"] = int(state.get("executor_tokens", 0)) + int(usage.get("total_tokens", 0))
+state["executor_model"] = used_model
 state_path.parent.mkdir(parents=True, exist_ok=True)
 state_path.write_text(json.dumps(state, indent=2) + "\n")
 print(f"Applied patch from {patch_path}")

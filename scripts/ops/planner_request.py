@@ -2,6 +2,7 @@
 import argparse
 import json
 import os
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -15,41 +16,51 @@ from common import (
 )
 
 
-def call_model(model: str, system_prompt: str, user_prompt: str):
+def call_model(models: list[str], system_prompt: str, user_prompt: str):
     key = os.getenv("OPENAI_API_KEY", "")
     if not key:
         die("OPENAI_API_KEY is required")
-    payload = {
-        "model": model,
-        "input": [
-            {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
-            {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
-        ],
-    }
-    req = urllib.request.Request(
-        "https://api.openai.com/v1/responses",
-        data=json.dumps(payload).encode("utf-8"),
-        headers={
-            "Authorization": f"Bearer {key}",
-            "Content-Type": "application/json",
-        },
-        method="POST",
-    )
-    with urllib.request.urlopen(req) as resp:
-        data = json.loads(resp.read().decode("utf-8"))
-    text = data.get("output_text", "").strip()
-    if not text:
-        die("Planner model returned empty output")
-    try:
-        plan = json.loads(text)
-    except json.JSONDecodeError:
-        start = text.find("{")
-        end = text.rfind("}")
-        if start == -1 or end == -1:
-            die("Planner output was not JSON")
-        plan = json.loads(text[start : end + 1])
-    usage = data.get("usage", {})
-    return plan, usage
+    last_error = ""
+    for model in models:
+        payload = {
+            "model": model,
+            "input": [
+                {"role": "system", "content": [{"type": "text", "text": system_prompt}]},
+                {"role": "user", "content": [{"type": "text", "text": user_prompt}]},
+            ],
+        }
+        req = urllib.request.Request(
+            "https://api.openai.com/v1/responses",
+            data=json.dumps(payload).encode("utf-8"),
+            headers={
+                "Authorization": f"Bearer {key}",
+                "Content-Type": "application/json",
+            },
+            method="POST",
+        )
+        try:
+            with urllib.request.urlopen(req) as resp:
+                data = json.loads(resp.read().decode("utf-8"))
+            text = data.get("output_text", "").strip()
+            if not text:
+                die("Planner model returned empty output")
+            try:
+                plan = json.loads(text)
+            except json.JSONDecodeError:
+                start = text.find("{")
+                end = text.rfind("}")
+                if start == -1 or end == -1:
+                    die("Planner output was not JSON")
+                plan = json.loads(text[start : end + 1])
+            usage = data.get("usage", {})
+            return plan, usage, model
+        except urllib.error.HTTPError as err:
+            body = err.read().decode("utf-8", errors="ignore")
+            last_error = f"{err.code} {body}"
+            if err.code in (400, 401, 403, 404):
+                continue
+            raise
+    die(f"Planner request failed for all candidate models: {models}. Last error: {last_error}")
 
 
 parser = argparse.ArgumentParser()
@@ -103,7 +114,12 @@ user_prompt = "\n\n".join([
 if args.delta_file and Path(args.delta_file).exists():
     user_prompt += "\n\n# Delta Context\n" + Path(args.delta_file).read_text()
 
-plan, usage = call_model(os.getenv("PLANNER_MODEL", "gpt-5"), system_prompt, user_prompt)
+model_candidates = [
+    m.strip()
+    for m in os.getenv("PLANNER_MODEL_CANDIDATES", "gpt-5.3,gpt-5,gpt-4o-mini").split(",")
+    if m.strip()
+]
+plan, usage, used_model = call_model(model_candidates, system_prompt, user_prompt)
 out_dir = Path("ops-state")
 out_dir.mkdir(parents=True, exist_ok=True)
 plan_path = out_dir / "ops-plan.json"
@@ -111,6 +127,7 @@ plan_path.write_text(json.dumps(plan, indent=2) + "\n")
 
 state["run_id"] = args.run_id
 state["issue_number"] = int(args.issue_number) if args.issue_number else None
+state["planner_model"] = used_model
 state["planner_tokens_last"] = usage.get("total_tokens", 0)
 state["planner_tokens"] = int(state.get("planner_tokens", 0)) + int(usage.get("total_tokens", 0))
 state_path.write_text(json.dumps(state, indent=2) + "\n")

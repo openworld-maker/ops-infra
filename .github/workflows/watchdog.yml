@@ -7,6 +7,9 @@ permissions:
   issues: write
   pull-requests: write
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   watchdog:
     runs-on: ubuntu-latest

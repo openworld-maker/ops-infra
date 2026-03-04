@@ -31,6 +31,9 @@ permissions:
   issues: write
   pull-requests: write
 
+env:
+  GITHUB_TOKEN: ${{ github.token }}
+
 jobs:
   select-task:
     runs-on: ubuntu-latest

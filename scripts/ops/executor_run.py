@@ -56,6 +56,7 @@ def normalize_patch_text(text: str) -> str:
 
 def call_model(models: list[str], system_prompt: str, user_prompt: str):
     key = openai_api_key()
+    http_timeout = int(os.getenv("OPENAI_HTTP_TIMEOUT_SECONDS", "120"))
     last_error = ""
     for model in models:
         for attempt in range(1, 5):
@@ -76,7 +77,7 @@ def call_model(models: list[str], system_prompt: str, user_prompt: str):
                 method="POST",
             )
             try:
-                with urllib.request.urlopen(req) as resp:
+                with urllib.request.urlopen(req, timeout=http_timeout) as resp:
                     data = json.loads(resp.read().decode("utf-8"))
                 text = extract_response_text(data)
                 usage_obj = data.get("usage") or {}
@@ -97,6 +98,15 @@ def call_model(models: list[str], system_prompt: str, user_prompt: str):
                 if err.code in (400, 401, 403, 404, 422):
                     break
                 raise
+            except (TimeoutError, urllib.error.URLError) as err:
+                last_error = str(err)
+                sleep_s = min(2**attempt, 20)
+                print(
+                    f"Executor transport timeout/error on model {model}, retrying in {sleep_s}s "
+                    f"(attempt {attempt}/4): {last_error[:240]}"
+                )
+                time.sleep(sleep_s)
+                continue
     die(f"Executor request failed for all candidate models: {models}. Last error: {last_error}")
 
 
